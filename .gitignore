@@ -5,6 +5,8 @@
 /docs/*
 !/docs/replication.md
 !/EFI/
+!/install-custom-kexts.sh
+!/tools/
 .DS_Store
 ._*
 *.swp
