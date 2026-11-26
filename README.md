@@ -1,24 +1,61 @@
 # macOS Sequoia on the Motorola Moto Book 60
 
-This project documents an OpenCore setup tested on one Motorola Moto Book 60 (machine type `83J7`) with an Intel Core 7 240H. It is a build guide and test record, not a downloadable EFI or an official macOS configuration. Start with the [replication guide](docs/replication.md).
+A working OpenCore EFI for the Motorola Moto Book 60 (machine type `83J7`), Intel Core 7 240H, on macOS Sequoia 15.8.3 (`24H241`). Built from a real booting configuration rather than a template, and documented as-is — including what does not work.
 
-| Component | Tested configuration |
+**Read [docs/replication.md](docs/replication.md) before using the EFI.** It explains what this build is, what it depends on, and how to adapt it.
+
+| Component | This build |
 | --- | --- |
-| OS | macOS Sequoia 15.8.3 (`24H241`, Darwin 24) |
-| CPU | Core 7 240H, 6 P-cores + 4 E-cores, 16 threads with Hyper-Threading enabled |
-| Graphics | Intel iGPU `8086:A7AB`, Samsung OLED, 2880×1800 at 120 Hz with a custom WhateverXe build |
-| Wireless | Realtek RTL8922AE Wi-Fi (`10EC:8922`) and RTL8922A Bluetooth (`0BDA:D922`); other units may ship with different cards |
+| CPU | Intel Core 7 240H (6 P + 4 E cores, 16 threads) |
+| Graphics | Intel iGPU `8086:A7AB`, custom WhateverXe 0.8.2, native-only 2880×1800 @120 Hz |
+| Panel | Samsung OLED, 240 Hz capable; 120 Hz used |
+| Wireless | Realtek RTL8922AE Wi-Fi (`10EC:8922`) + RTL8922A Bluetooth (`0BDA:D922`) |
+| SMBIOS | `MacPro7,1` |
+| OS | macOS 15.8.3 (`24H241`), Darwin 24 |
 
-## What worked and what didn't
+**Your hardware may differ.** Other `83J7` units ship with different Wi-Fi/Bluetooth cards, so verify your PCI and USB IDs before assuming the included driver stack applies.
 
-- The internal OLED ran at native 120 Hz with acceleration and brightness control. The tested build also offered native 60 Hz; scaled HiDPI modes were removed after glitches.
-- Realtek Wi-Fi and Bluetooth worked with the matched driver stack. AirDrop was **not verified** with an Apple peer; Android Quick Share is not a substitute for that test.
-- The touchpad worked more smoothly with VoodooI2C polling. Sleep/wake caused freezes and a panic during testing; do not rely on lid-close sleep.
-- The internal digital mic worked with the custom driver and publisher on a laptop SMBIOS. In the saved `MacPro7,1` profile it failed to publish. Use a laptop-SMBIOS design if internal mic support matters, and test capture before depending on it.
-- Best recorded Geekbench 7 result: **1517 single-core / 8026 multi-core**, on AC with maximum fan cooling and several custom power-management changes. This is a single-machine result, not a baseline or a target.
+## Status: what works, what does not
 
-**Before trying this:** Make a verified backup and keep a separate bootable recovery USB. Test on USB before changing the internal EFI. Match your panel, wireless hardware, and macOS build; a Moto Book 60 model name alone is not sufficient.
+**Working**
+- Native OLED 2880×1800 at 120 Hz, Metal acceleration, and brightness control (display mux and internal panel)
+- Wi-Fi (Realtek stack), Bluetooth, and USB networking fallback
+- Keyboard, touchpad (I2C polling), speakers, brightness keys
+- Battery reporting and charging status
+- Best recorded Geekbench 7 result: **1517 single / 8026 multi**, best-case, clean AC and maximum fan cooling
 
-## What is included
+**Known problems — verify before relying on them**
+- **Internal digital microphone is broken in this configuration.** The saved best-performance build (`MacPro7,1`) fails microphone initialization with `0xe00002d5` (initial PM idle acknowledgement missing). The equivalent `MacBookPro16,4` configuration works, at noticeably lower scores. Fixing this on `MacPro7,1` is untested work.
+- **Sleep and wake are not safe.** Two vendor wake fixes caused UI freezes on this SKU, and display sleep remains unresolved. Do not close the lid and expect it to recover. Keep sleep disabled.
+- **AirDrop is unverified.** No second Apple device was available, so no AirDrop test can be claimed either way.
+- **CPU throttling is not fully explained.** Every benchmark reads `CPU LIMIT ICCMAX/PL4/OTHER`, which is a grouped reason, not a specific register. Windows on the same chassis scores higher.
+- **`hw.busfrequency` reports 400000000**; harmless in this build, not investigated further.
+- **OC loading depends on untested local extensions.** Four custom kernel extensions — IntelSpeedShiftEPP, FanMode, RazerSSTMicrophone, RaplDiag — and `TccOffset` load only from `/Library/Extensions` through the prebuilt `AuxiliaryKernelExtensions.kc` included here; see [heavily custom build details](docs/replication.md#known-limitations-and-that-bootloader).
 
-Only the guide and reference settings. There is no macOS installer, prebuilt EFI, kernel collection, driver binary, raw log, or machine-specific SMBIOS data. Build or obtain compatible components from their upstream projects. Some local ports in the tested setup do not have matching builds in this repository; where a stock release cannot reproduce the result, the guide calls that out explicitly.
+**Not tested:** AirDrop continuity, sleep/wake, and the internal camera.
+
+## What is in `EFI/`
+
+- `BOOT/BOOTx64.efi` — from an official OpenCore 1.0.6 release, and **not from your snapshot's bootloader**. If you substitute your own bootloader, know which build you are substituting.
+- `OC/` — the tested configuration:
+  - `OpenCore.efi` — **a custom build matching no official release.** This is unusual and deliberate, and its behavior is documented in the replication guide. Replace it only if you know what you are doing.
+  - `config.plist` — SMBIOS fields are placeholders. Generate your own serial, MLB, UUID, and ROM before use.
+  - `Kexts/` — 32 kernel extensions, including the four custom ones plus their matching upstream injectors.
+  - `ACPI/`, `Drivers/`, `Resources/` — the tested tables and boot picker assets.
+  - `AuxiliaryKernelExtensions.kc` — a prebuilt kernelcollection that carries the five `/Library/Extensions` kexts, needed for fan mode and fan hotkey, microphone, and read-only power diagnostics to work. It is machine-neutral; your serial, MLB, UUID, and MAC do not appear in it.
+- No backups, `.dSYM`, or `._*` files are committed.
+
+## Using it
+
+1. Make a verified backup of your disk and existing EFI first, and test from a bootable USB before replacing the internal ESP.
+2. Generate your own SMBIOS identifiers and write them into `config.plist` (`PlatformInfo → Generic`).
+3. Copy `BOOT` and `OC` onto your EFI System Partition.
+4. Install the `/Library/Extensions` kexts (or use the provided AuxiliaryKernelExtensions.kc) to get full functionality.
+5. Disable sleep, as described in the safety section.
+6. Boot, then check the relevant items: display and 120 Hz, brightness, input, audio, USB, network, mic.
+
+See [docs/replication.md](docs/replication.md) for the full build record, assumptions, and safe changes.
+
+## License
+
+Third-party components retain their own licenses; some custom kernel extensions are derived from upstream projects credited in the guide.

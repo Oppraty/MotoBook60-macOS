@@ -4,3 +4,7 @@
 !/docs/
 /docs/*
 !/docs/replication.md
+!/EFI/
+.DS_Store
+._*
+*.swp

@@ -1,50 +1,117 @@
 # Replication guide
 
-This guide separates the order to test changes from the settings observed on one working machine. The full setup is **not reproducible from stock releases alone**. Keep a baseline that boots without optional drivers, and stop at that baseline if you cannot find or build a matching port.
+This repository ships a working, tested EFI alongside this guide. The guide explains what the build is, what it depends on, and how to adapt it — it is not a generic install walkthrough.
 
-## 1. Identify the exact hardware and prepare recovery
+This EFI is **not reproducible from stock releases alone**. It contains a custom-built OpenCore bootloader and several custom kernel extensions used in specific combinations. Keep a verified baseline that boots without the optional components before changing anything.
 
-1. In the OS the machine shipped with (Windows or Linux), record the CPU, iGPU PCI ID, panel model and native timings, Wi-Fi PCI ID, and Bluetooth USB ID. The reference is `83J7`, Core 7 240H, `8086:A7AB` graphics, Samsung OLED, `10EC:8922` Wi-Fi, and `0BDA:D922` Bluetooth. Recheck these after a hardware change.
-2. Back up the disk and its EFI System Partition. Verify that you can boot your existing OS independently of OpenCore. Keep a separate recovery USB, not just a second config on the same ESP.
-3. Use the [Dortania install guide](https://github.com/dortania/OpenCore-Install-Guide) for the USB layout and installer creation. It is a guide to OpenCore, not a guarantee that it covers this CPU or panel. Build `EFI/BOOT/BOOTx64.efi` and `EFI/OC/` from one [OpenCorePkg](https://github.com/acidanthera/OpenCorePkg) release. The exact OpenCore release used in the snapshot was not verified; do not mix versions of its EFI files, sample plist, and `ocvalidate`.
-4. Start a fresh `config.plist` from the OpenCore sample. Use your own SMBIOS identifiers: do not reuse another machine's `SystemSerialNumber`, `MLB`, `SystemUUID`, or `ROM`. Use [ProperTree](https://github.com/corpnewt/ProperTree) or equivalent to check the entries, then run the `ocvalidate` from the same OpenCore release after each change. A passing configuration check does not prove it boots.
+## 1. What this build is, and what to check first
 
-## 2. Build and test a minimal USB EFI
+This EFI is exported from a machine that was already booting. Treat it as a starting point for a similar machine, not a drop-in image.
 
-- **EFI drivers:** The reference used `OpenRuntime.efi` and `HfsPlus.efi` (see [OcBinaryData](https://github.com/acidanthera/OcBinaryData)), plus `OpenCanopy.efi`, `ResetNvramEntry.efi`, and `OpenLinuxBoot.efi`. The last three serve the picker, NVRAM reset entry, and Linux scanning respectively; do not add them merely to start macOS.
-- **ACPI:** The tested set enabled `SSDT-EC.aml`, `SSDT-MCHC.aml`, `SSDT-PLUG-ALT.aml`, `SSDT-RTCAWAC.aml`, `SSDT-USBX.aml`, `SSDT-XOSI.aml`, and `SSDT-PNLF.aml`. It paired those tables with the `H_EC _STA to XSTA Rename` and `_OSI to XOSI` patches. Inspect your own ACPI namespaces before using either rename or generating the matching tables. These filenames describe intent, not a universal set of AML files.
-- **Early kexts:** The reference used Lilu 1.7.3 and VirtualSMC 1.3.9. Load dependencies before their plugins and audit the enabled entries after taking a snapshot. Add only what's needed to boot and use the keyboard. Provide wired networking through a supported adapter if the installer needs internet.
-- **CPU configuration:** The saved `Kernel → Emulate → Cpuid1Data` is `55060a00000000000000000000000000`, with mask `ffffffff000000000000000000000000`. These are hex bytes for plist Data, not strings. Reference quirks: `ProvideCurrentCpuInfo=True`, `AppleXcpmCfgLock=True`, `AppleXcpmForceBoost=False`, `DisableIoMapper=True`, and `XhciPortLimit=False`. These are machine-specific values, not defaults. Check firmware settings and validate any differences before testing.
-- **Security:** The saved snapshot used `SecureBootModel=Disabled` and `csr-active-config` = `0x0803`, which turns on untrusted kexts, unrestricted filesystem access, and unapproved kexts. It also loaded AMFIPass and a replacement Wi-Fi stack that replaces built-in networking code. Those weaken protections or change what code loads. They are not prerequisites for a basic USB boot. Start without these relaxations or unsigned add-ons; only evaluate a documented, necessary exception on a test system. If it requires a security trade-off you cannot accept, leave that feature disabled.
+1. **Record your hardware.** In the OS the machine shipped with, note the CPU, iGPU PCI ID, panel model and native timings, Wi-Fi card PCI ID, and Bluetooth USB ID. The build here targets `83J7` with Core 7 240H, iGPU `8086:A7AB`, Samsung OLED, Wi-Fi `10EC:8922`, Bluetooth `0BDA:D922`. Other `83J7` units ship different wireless cards, and the included Realtek stack will not apply to them.
+2. **Make recovery possible before you change anything.** Back up the disk and its existing EFI System Partition, confirm you can still boot your current OS without OpenCore, and test from a bootable USB before touching the internal ESP. A second OpenCore folder on the same partition is not a recovery plan.
+3. **Generate your own SMBIOS identifiers.** The committed `config.plist` uses placeholders for `SystemSerialNumber`, `MLB`, `SystemUUID`, and `ROM`. Fill them in with [ProperTree](https://github.com/corpnewt/ProperTree) or your usual tool before the first boot. Never reuse another machine's values.
+4. **Sanity-check the config.** Open `config.plist` and confirm `PlatformInfo → Generic → SystemProductName` is what you intend. A passing `ocvalidate` run does not prove the file boots, and a failing one usually means the file is malformed.
+5. **Understand what you are enabling.** See [§4](#4-known-limitations-and-that-bootloader) before booting: this build ships a custom bootloader, four unsigned kernel extensions, reduced SIP, and a prebuilt kernelcollection.
 
-Boot from USB using the firmware boot menu. Verify the installer or existing test volume starts and can reboot. Save that EFI as your fallback before testing hardware support.
+## 2. Installing and verifying the EFI
 
-## 3. Add hardware support one change at a time
+1. Copy both `BOOT` and `OC` onto your EFI System Partition. `BOOT/BOOTx64.efi` comes from the official OpenCore 1.0.6 release.
+2. Decide whether to use the bundled `OC/AuxiliaryKernelExtensions.kc`. Installing it on the boot volume restores the microphone stack, fan control, and power diagnostics, but also loads five unsigned kernel extensions. Skipping it means those features are absent.
+3. Boot from the firmware boot picker, not by chaining BIOS entries.
+4. Verify, in this order, and stop at the first failure:
+   - `sw_vers` reports macOS 15.8.3; `sysctl hw.physicalcpu hw.logicalcpu` shows the expected counts
+   - Displays: native 2880×1800, 120 Hz available, brightness keys work
+   - Input: keyboard, touchpad (with `-vi2c-force-polling`, IORegistry should show `"Interrupt Mode" = "Polling"`)
+   - Audio: speaker output, then the microphone — expect the internal mic to fail
+   - Network: whichever stack applies to your card
+   - `kmutil showloaded` for the kexts you installed
+5. **Never run `kmutil unload`** on this setup. Live unloading triggered a kernel panic here and recovery was by boot, not by undo.
+6. Keep system sleep disabled (`pmset -a sleep 0`) until you have independently verified wake on your own hardware.
 
-| Area | Reference | How to check |
+## 3. What is actually in the EFI, and how each piece is used
+
+Every item below is present in `EFI/OC/` unless marked otherwise. Change one area at a time and re-verify from step 4 of [§2](#2-installing-and-verifying-the-efi).
+
+| Area | What ships | Notes and checks |
 | --- | --- | --- |
-| OLED and iGPU | Custom [WhateverXe](https://github.com/b00t0x/WhateverXe), bundle version 0.8.2, native-only 120/60 Hz build, plus BrightnessKeys 1.0.4. See below. | Confirm native resolution and 120 Hz in Displays, test a Metal app, check brightness keys and AUX brightness, then display-off/display-on in one boot. |
-| Input | VoodooPS2Controller 2.3.7 with VoodooInput 1.1.6 and VoodooPS2Keyboard 2.3.7; VoodooI2C 2.9.1 with GPIO/services plugins and VoodooI2CHID 1.0. Use only one VoodooInput copy. | With `-vi2c-force-polling`, confirm IORegistry reports `"Interrupt Mode" = "Polling"`. Test typing, cursor, gestures, and clicks separately. |
-| Speakers and battery | AppleALC 1.9.8 with audio layout 15 (`0f000000` as Data) on `PciRoot(0x0)/Pci(0x1f,0x3)`; SMCBatteryManager 1.3.9. The snapshot also loaded ReYogaSMC 2.2.1. | Verify output and headphones separately; plug and unplug AC and check whether charging and battery state change. |
-| USB | USBToolBox 1.2.0, UTBDefault 1.0, and XHCI-unsupported 0.9.2 were enabled. Map your own USB ports instead of treating UTBDefault as a finished map. | Test both USB speeds, USB-C orientations, and the internal Bluetooth port. |
-| Wi-Fi | For this Realtek card the saved profile used AirPort_RTW89 0.6.0 + AirPortRTW89Front, IOSkywalkFamily 1.0, IO80211FamilyLegacy 12.0, and AMFIPass 1.4.1. Related entries used a minimum kernel of `23.0.0`. The profile excluded the built-in `com.apple.iokit.IOSkywalkFamily` for those kernels. | This is a matched replacement stack, not a stock drop-in. Start with wired networking. Only try it on the documented OS build after verifying driver provenance and compatibility. Then test reconnect and traffic with Bluetooth on. |
-| Bluetooth | RTL8922AFirmware 0.1.0 and a custom BlueToolFixup 2.7.3 with Realtek patches; the corresponding args were `-btlfxboardid -btlfxallowanyaddr -btlfxrealtek`. The stock bundle version does not identify those patches. | Confirm controller detection, pair and reconnect, and check that Bluetooth stays on after a reboot. Do not claim AirDrop unless files transfer both ways with an Apple device. |
-| Internal digital mic | This is separate from AppleALC/layout 15: a ported RazerSSTMicrophone 0.3.3 (Intel DSP `8086:51CA`), matched userspace publisher, and a compatible laptop SMBIOS are needed. The tested MacPro profile reported `0xe00002d5` (initial PM idle acknowledgement missing). | Look for **Razer Internal Microphone** and record real input. A listed device or a nonzero UI meter is not enough to confirm intelligible audio. |
+| Bootloader | Custom `OpenCore.efi` (no matching release) + official 1.0.6 `BOOTx64.efi` | See [§4](#4-known-limitations-and-that-bootloader). This is the least auditable part of the build. |
+| EFI drivers | `OpenRuntime.efi`, `HfsPlus.efi`, `OpenCanopy.efi`, `ResetNvramEntry.efi`, `OpenLinuxBoot.efi` | The last three are picker, NVRAM reset, and Linux scanning; not required to boot macOS. |
+| ACPI | 8 tables: `SSDT-EC`, `SSDT-MCHC`, `SSDT-PLUG-ALT`, `SSDT-RTCAWAC`, `SSDT-USBX`, `SSDT-XOSI`, `SSDT-PNLF`, `SSDT-Disable_Network_RP05` | Paired with the `H_EC _STA to XSTA Rename` and `_OSI to XOSI` ACPI patches. These are not universal — inspect your own ACPI namespace before reusing the renames. |
+| Core kexts | Lilu 1.7.3, VirtualSMC 1.3.9, SMCBatteryManager 1.3.9, ReYogaSMC 2.2.1, CpuTscSync 1.1.2, BrightnessKeys 1.0.4 | Dependencies first: Lilu and VirtualSMC load before their plugins. |
+| Graphics | Custom [WhateverXe](https://github.com/b00t0x/WhateverXe) 0.8.2 (`org.b00t0x.WhateverXe`), native-only 120/60 Hz | See the OLED note below. `-disablegfxfirmware -igfxdvmt` and the `wex-*` args are tied to this panel. |
+| Input | VoodooPS2Controller 2.3.7 (+ VoodooInput, VoodooPS2Keyboard), VoodooI2C 2.9.1 (+ GPIO/services), VoodooI2CHID | `-vi2c-force-polling` keeps touchpad reporting in polling mode. Only one VoodooInput copy. |
+| Audio | AppleALC 1.9.8, layout 15 (`0f000000` as Data) on `PciRoot(0x0)/Pci(0x1f,0x3)` | Speakers only. The microphone is a separate, broken stack — see the mic row. |
+| USB | USBToolBox 1.2.0, `UTBDefault.kext`, `XHCI-unsupported.kext` | The latter two are plist-only injectors; see [§4](#the-two-plist-only-kexts-are-not-broken). Map ports for your own chassis. |
+| Wi-Fi | AirPort_RTW89 0.6.0 (+ `AirPortRTW89Front`), IOSkywalkFamily 1.0, IO80211FamilyLegacy 12.0, AMFIPass 1.4.1 | A matched replacement stack, min kernel `23.0.0`, with the built-in `com.apple.iokit.IOSkywalkFamily` excluded for those kernels. Specific to the Realtek card. |
+| Bluetooth | RTL8922AFirmware 0.1.0 (`io.github.gevuz.RTL8922AFirmware`), BlueToolFixup 2.7.3 | **BlueToolFixup is not stock.** It reports the stock `as.acidanthera.BlueToolFixup` identifier, but the binary carries extra Realtek patches. The args `-btlfxboardid -btlfxallowanyaddr -btlfxrealtek` only make sense with that patched binary. |
+| Microphone | `RazerSSTMicrophone.kext` via AuxiliaryKernelExtensions.kc | Broken under `MacPro7,1`; see [§4](#the-microphone-does-not-work-in-this-configuration). |
+| Performance | HybridPM 1.0.0 (`hpmpl1=64`), IntelHybridCores 0.2.0 (`hcpower=4,2`), IntelSpeedShiftEPP (`EPP=0`, `Desired=0`), FanMode, RaplDiag, TccOffset (AuxKC only) | See the performance note below. HybridPM and IntelHybridCores are Darwin 24 ports, not upstream releases. |
+| Disabled in config | CPUFriend, CPUFriendDataProvider, CpuTopologyRebuild | Files are present but `Enabled=false`. Measured worse here. |
 
-### OLED build reference
+### The OLED build
 
-The tested WhateverXe binary SHA-256 was `fb2f6bb995f951acb5df501892ae1281c54e5062dffcd0599ad4121496b07546`. This fingerprint identifies one built binary; a rebuild may differ. The port used `kern_display13_panel_timing.hpp` with `VerticalBlanking=80+16+24`, `VerticalSyncOffset=80`, and `RefreshRate=120` for the matching panel, retaining the native 60 Hz mode and setting `ScaledCount=0`. The recorded graphics args were `-allow3d -disablegfxfirmware -igfxdvmt -wex-tgl-edp-keep -wex-panel-gop -wex-edp-auxbl`. Do not paste them wholesale onto another panel or WhateverXe version. The exact patch set is not included. Do not assume an upstream 0.8.2 binary, a later release, or these values alone reproduce the build.
+The included WhateverXe binary has SHA-256 `fb2f6bb995f951acb5df501892ae1281c54e5062dffcd0599ad4121496b07546`, and is 0.8.2-derived with native-only modes (`ScaledCount=0`), 120 Hz and 60 Hz, no scaled HiDPI. That fingerprint identifies this one binary; a rebuild will differ. The panel timing came from `kern_display13_panel_timing.hpp` with `VerticalBlanking=80+16+24`, `VerticalSyncOffset=80`, `RefreshRate=120`. Graphics args in the committed config: `-allow3d -disablegfxfirmware -igfxdvmt -wex-tgl-edp-keep -wex-panel-gop -wex-edp-auxbl`. Do not reuse these constants or args on another panel; they were derived from this Samsung panel's EDID and timing. The patch set is not published.
 
-### Optional performance profile
+### The performance numbers
 
-This is not required to boot or bring up the display. The best recorded run combined `MacPro7,1`, RestrictEvents 1.1.6 (`revpatch=memtab,pci`), CpuTscSync 1.1.2, a Darwin 24 port of [IntelHybridCores](https://github.com/rodgod-rr/IntelHybridCores) 0.2.0 (`hcpower=4,2`), a Darwin 24 build of [HybridPM](https://github.com/Thatisjigen/HybridPM) 1.0.0 (configured PL1 of 64 W), and a local [IntelSpeedShiftEPP](https://github.com/xnpty/IntelSpeedShiftEPP) port that treated unknown power source as AC on the desktop SMBIOS and set EPP and HWP Desired to 0. CPUFriend and CpuTopologyRebuild were disabled. Test each change in isolation instead of combining them on first boot. Do not assume upstream release compatibility with Darwin 24.
+The 1517/8026 Geekbench result is one run, on AC, with fan cooling forced to maximum and a custom thermal offset. It is not a target and not reproducible on demand. Run-to-run variance on this machine was large: another identical-config run gave 1234/6501. Several changes that looked like improvements measured worse. Higher PL2 was worse, and CPUFriend with `16,4` vectors was worse. The binding limit reads `ICCMAX/PL4/OTHER`, which is a grouped reason, not a diagnosable register. Do not chase it by writing CPU/VRM registers or raising current limits.
 
-That run also used maximum fan cooling and a custom thermal offset. Keep factory fan and power settings for your initial baseline. Higher PL2 performed worse in testing. The logged `ICCMAX/PL4/OTHER` indicator is a grouped limit reason, not proof of which firmware or hardware policy was limiting performance. Do not write undocumented CPU/VRM registers, raise current limits, or treat a score as a reason to override thermal protections. The desktop SMBIOS swap alone did not improve performance and broke the internal mic; favor a mic-tested laptop profile when that feature is required.
+## 4. Known limitations and that bootloader
 
-## 4. Validate before installing to the internal ESP
+This section is deliberately blunt because the EFI here is close to the edge of what a public repo should do.
 
-- Check the OS build with `sw_vers` and CPU counts with `sysctl hw.physicalcpu hw.logicalcpu`. Use `kmutil showloaded` to confirm kext loading. **Do not run `kmutil unload`** on this setup: live unloading caused a panic.
-- Reboot after each change, with a way to select the old external EFI even if the internal one fails. Compare boot, display and brightness, input, speakers and mic, charging, USB, and networking against the previous working build. Do not assume system sleep works; keep it off for this profile until validated on your hardware.
-- After repeated USB boots and a recovery test, decide whether to copy your **verified** EFI to the internal ESP. Preserve all other OS boot entries. Do not reuse another computer's AuxKC, copy privileged scripts or helpers blindly, or reset NVRAM as a first-line diagnostic.
-- For rollback, boot the unchanged recovery EFI, identify the correct ESP, and restore your own known-good EFI and any matching local extension changes. Recover with a restart, not a live kext unload.
-- When reporting results, include model, OS build, hardware IDs, component versions, single change tested, and expected versus observed behavior. Redact serials, UUIDs, MAC addresses, Wi-Fi names, usernames, and paths from any logs or configs you share.
+### The bootloader is custom-built
+
+`EFI/OC/OpenCore.efi` matches **no official OpenCore release**. It is 630,784 bytes, while official 1.0.0–1.0.2 builds are 614,400 bytes and 1.0.3 and later are 622,592. Every driver in `EFI/OC/Drivers/` also differs from every release I checked, including `OpenRuntime.efi`.
+
+What is included instead:
+- `EFI/BOOT/BOOTx64.efi` and `EFI/OC/BOOTx64.efi` come from the **official OpenCore 1.0.6 RELEASE**, so the mirror entry and the fallback path are verifiable.
+- The custom `OpenCore.efi` is shipped as-is and labeled, because replacing it with an official build changes behavior and may not boot.
+
+If you want a fully auditable build, replace `OpenCore.efi` with the 1.0.6 RELEASE binary and retest everything. Do not mix `BOOTx64.efi` from one release with a custom `OpenCore.efi` of unknown provenance — that is the fastest route to a boot failure you cannot diagnose.
+
+### Four custom kernel extensions, plus one dependency
+
+Working microphone, fan control, and the reported performance numbers depend on kernel extensions with no public upstream release, or on local ports that differ from upstream:
+
+| Kext | Role | Source |
+| --- | --- | --- |
+| `IntelSpeedShiftEPP.kext` | HWP EPP handling; treats unknown power source as AC and forces Desired=0 | Local port of [`xnpty/IntelSpeedShiftEPP`](https://github.com/xnpty/IntelSpeedShiftEPP). **No source published here**; only the built binary ships. If you need the source, rebuild from upstream or contact the maintainer. |
+| `FanMode.kext` | Fan mode and DYTC via vendor ACPI `VPCW`/`VPCR`/`DYTC` | Local, no public source. Binary only. |
+| `RazerSSTMicrophone.kext` | Internal digital mic over Intel DSP `8086:51CA` | Local port. Binary only. |
+| `RaplDiag.kext` | Read-only RAPL power-limit diagnostics | Local. Binary only. |
+| `TccOffset.kext` | `tccoffset=2` thermal offset | **Not included.** No source or binary is present in this repository |
+
+These five load from `/Library/Extensions`, not from `/EFI`. They are bundled in `EFI/OC/AuxiliaryKernelExtensions.kc`. If you remove that file, or install the EFI without it, you lose the microphone, fan control, and power diagnostics, and `tccoffset=2` has no effect. `OC/Kexts/` also carries the four whose binaries are available, but those copies are not what loads — the kernelcollection takes precedence.
+
+Copying `Kexts/` to the EFI partition is **not** equivalent to installing them. Do not assume a config plist change or an `UpdateSMBIOS` flag will load them; they live in the boot volume's kernel collection, and the EFI copies are there for reference and rebuilds.
+
+### The microphone does not work in this configuration
+
+The internal mic fails with `0xe00002d5` ("Initial PM idle acknowledgement missing") under `MacPro7,1`. Mic capture worked under `MacBookPro16,4` at lower benchmark scores. If the mic matters to you, expect to redo the SMBIOS and audio tuning work; there is no verified fix shipped here.
+
+### The two plist-only kexts are not broken
+
+`UTBDefault.kext` and `XHCI-unsupported.kext` in `OC/Kexts/` contain only `Info.plist` with no `Contents/MacOS/` binary. This is correct and intentional: they are IOKit injector personalities that publish matching dictionaries and are consumed by their host kext (`com.dhinakg.USBToolBox.kext` and `AppleUSBXHCILPTH` respectively). The official USBToolBox 1.2.0 release ships a byte-identical `UTBDefault` plist with no binary either.
+
+### Sleep and wake
+
+Do not treat sleep as working. Vendor wake fixes caused UI freezes on this SKU, and display-only sleep is unresolved. Keep system sleep disabled (`pmset -a sleep 0`) and expect lid close to blank the panel only.
+
+### Security posture
+
+`Misc → Security` uses `SecureBootModel=Disabled` and `csr-active-config` = `0x0803`, which turns on untrusted kexts, unrestricted filesystem access, and unapproved kexts. `DmgLoading=Signed` remains. Those relaxations support the custom kernel extensions and the Realtek Wi-Fi stack; they are not needed merely to boot macOS. Reduce them if you can accept losing those features.
+
+### Power and fan settings
+
+The reported Geekbench figures came from maximum fan cooling plus a custom thermal offset and specific power limits. They are a recorded result on one machine, not a target. Raising power limits or writing undocumented CPU/VRM registers is not recommended here: the binding limit is not a register that was safely writable, and attempts to raise it made things worse.
+
+## 5. Changing this build safely
+
+- Keep a verified fallback before any change: a second EFI folder you have booted, or a recovery USB. Restoring is by booting that EFI, not by unloading kexts.
+- Change one thing per boot. Change one thing, boot, verify the items in [§2](#2-installing-and-verifying-the-efi) step 4, and record expected versus observed before touching the next item.
+- Do not copy another machine's `AuxiliaryKernelExtensions.kc` into this build. It is matched to these five kernel extensions and this macOS build.
+- Do not reset NVRAM as a first-line diagnostic. It clears the boot picker state you are relying on and hides the real problem.
+- The `-wex-*` and `-btlfx*` boot arguments are paired with custom binaries here. Adding them to a stock WhateverXe or stock BlueToolFixup does not reproduce this build and may not do anything.
+- Check `kmutil showloaded` rather than `kmutil logs show` dumps when confirming what loaded, and report results with model, OS build, hardware IDs, component versions, and a description of the single change. Redact serials, UUIDs, MAC addresses, Wi-Fi names, usernames, and paths from any logs or configs you share.
