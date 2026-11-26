@@ -9,4 +9,8 @@
 !/tools/
 .DS_Store
 ._*
-*.swp
+*.swp!/outreach/
+/outreach/*
+!/outreach/deepstorm-225h-attack-plan.md
+!/outreach/issue-audio-and-power-trade.md
+!/outreach/issue-verified-negative-results.md
