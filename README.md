@@ -18,49 +18,95 @@ A working OpenCore EFI for the Motorola Moto Book 60 (machine type `83J7`), Inte
 ## Status: what works, what does not
 
 **Working**
-- Native OLED 2880×1800 at 120 Hz, Metal acceleration, and brightness control (display mux and internal panel)
-- Wi-Fi (Realtek stack), Bluetooth, and USB networking fallback
+- Native OLED 2880×1800 at 120 Hz, Metal acceleration, brightness control (display mux and internal panel)
+- Wi-Fi (Realtek stack), Bluetooth, USB networking fallback
 - Keyboard, touchpad (I2C polling), speakers, brightness keys
 - Battery reporting and charging status
-- Best recorded Geekbench 7 result: **1517 single / 8026 multi**, best-case, clean AC and maximum fan cooling
+- Best recorded Geekbench 7 result: **1517 single / 8026 multi** (clean AC, maximum fan cooling). Windows on the same chassis reaches 2451/12065.
 
 **Known problems — verify before relying on them**
-- **Internal digital microphone is broken in this configuration.** The saved best-performance build (`MacPro7,1`) fails microphone initialization with `0xe00002d5` (initial PM idle acknowledgement missing). The equivalent `MacBookPro16,4` configuration works, at noticeably lower scores. Fixing this on `MacPro7,1` is untested work.
-- **Sleep and wake are not safe.** Two vendor wake fixes caused UI freezes on this SKU, and display sleep remains unresolved. Do not close the lid and expect it to recover. Keep sleep disabled.
-- **AirDrop is unverified.** No second Apple device was available, so no AirDrop test can be claimed either way.
-- **CPU throttling is not fully explained.** Every benchmark reads `CPU LIMIT ICCMAX/PL4/OTHER`, which is a grouped reason, not a specific register. Windows on the same chassis scores higher.
-- **`hw.busfrequency` reports 400000000**; harmless in this build, not investigated further.
-- **OC loading depends on untested local extensions.** Four custom kernel extensions — IntelSpeedShiftEPP, FanMode, RazerSSTMicrophone, RaplDiag — and `TccOffset` load only from `/Library/Extensions` through the prebuilt `AuxiliaryKernelExtensions.kc` included here; see [heavily custom build details](docs/replication.md#known-limitations-and-that-bootloader).
+- **Internal digital microphone is broken in this configuration.** The `MacPro7,1` profile fails microphone initialization with `0xe00002d5` (initial PM idle acknowledgement missing). A `MacBookPro16,4` configuration works, at noticeably lower scores. Fixing this on `MacPro7,1` is untested work.
+- **Sleep and wake are not safe.** Two vendor wake fixes caused UI freezes on this SKU, and display sleep stays unresolved. Do not close the lid and expect it to recover. Keep sleep disabled.
+- **AirDrop is unverified.** No second Apple device was available, so no AirDrop claim can be made either way.
+- **CPU throttling is not fully explained.** Every benchmark reads `CPU LIMIT ICCMAX/PL4/OTHER`, a grouped reason rather than a specific register. Write-permission on the usual PL1/PL2/PL4 registers is not the answer here.
+- `hw.busfrequency` reports `400000000`; harmless in this build, not investigated further.
 
 **Not tested:** AirDrop continuity, sleep/wake, and the internal camera.
 
-## What is in `EFI/`
+## What is in the repository
 
-- `BOOT/BOOTx64.efi` — from an official OpenCore 1.0.6 release, and **not from your snapshot's bootloader**. If you substitute your own bootloader, know which build you are substituting.
-- `OC/` — the tested configuration:
-  - `OpenCore.efi` — **a custom build matching no official release.** This is unusual and deliberate, and its behavior is documented in the replication guide. Replace it only if you know what you are doing.
-  - `config.plist` — SMBIOS fields are placeholders. Generate your own serial, MLB, UUID, and ROM before use.
-  - `Kexts/` — 32 kernel extensions, including the four custom ones plus their matching upstream injectors.
-  - `ACPI/`, `Drivers/`, `Resources/` — the tested tables and boot picker assets.
-  - `AuxiliaryKernelExtensions.kc` — a prebuilt kernelcollection that carries the five `/Library/Extensions` kexts, needed for fan mode and fan hotkey, microphone, and read-only power diagnostics to work. It is machine-neutral; your serial, MLB, UUID, and MAC do not appear in it.
-- No backups, `.dSYM`, or `._*` files are committed.
+| Path | What it is |
+| --- | --- |
+| `EFI/BOOT/BOOTx64.efi` | From the **official OpenCore 1.0.6 release**. The interior `EFI/OC/OpenCore.efi` is **a custom build matching no release** — unusual, deliberate, and documented. Replace it only if you know what you are doing. |
+| `EFI/OC/config.plist` | The tested configuration. SMBIOS fields are placeholders — generate your own serial, MLB, UUID, and ROM before use. |
+| `EFI/OC/Kexts/` | 32 kernel extensions: the four custom ones, the stock driver stack, and the two plist-only USB injectors. |
+| `EFI/OC/ACPI/`, `Drivers/`, `Resources/` | The tested ACPI tables, EFI drivers, and boot picker assets. |
+| `EFI/OC/AuxiliaryKernelExtensions.kc` | A **prebuilt kernelcollection built on one machine** — see the warning below. |
+| `install-custom-kexts.sh` | Builds the kernelcollection on *your* machine instead. See below. |
+| `tools/publish`, `tools/mic-input-check` | The userspace microphone publisher and capture check tool the mic kext needs. |
+| `docs/replication.md` | The full build record, hardware details, and safe changes. |
+
+No backups, `.dSYM`, or `._*` files are committed.
+
+### The prebuilt AuxiliaryKernelExtensions.kc is not machine-neutral
+
+This is the one part of the repo that is genuinely machine-specific, and it should not be used as-is. `OC/AuxiliaryKernelExtensions.kc` was built on the machine this EFI came from, so it carries **that machine's** kernel extensions alongside the five this laptop needs — including third-party HighPoint storage drivers for hardware this laptop does not have. Those are inert but wrong, and shipping them hands readers a collection matched to someone else's PC.
+
+The five kexts this build actually needs live in `/Library/Extensions`, not on the EFI partition:
+
+| Kext | Role |
+| --- | --- |
+| `IntelSpeedShiftEPP.kext` | HWP EPP handling; treats unknown power source as AC and forces Desired=0 |
+| `FanMode.kext` | Fan mode and DYTC via vendor ACPI `VPCW`/`VPCR`/`DYTC` |
+| `RazerSSTMicrophone.kext` | Internal digital mic over Intel DSP `8086:51CA` (see the mic caveat above) |
+| `RaplDiag.kext` | Read-only RAPL power-limit diagnostics |
+| `TccOffset.kext` | `tccoffset=2` thermal offset — **source not included**, binary not in this repo |
+
+Use `install-custom-kexts.sh` to install the four available ones and rebuild the collection on your own machine. Deleting the shipped `.kc` after doing so is the correct outcome, not a problem.
+
+## Install the custom kernel extensions
+
+```bash
+sudo ./install-custom-kexts.sh
+```
+
+Run it from inside this repository, as root. It:
+
+1. Verifies each of the four kext binaries against a pinned SHA-256 before touching anything.
+2. Installs them to `/Library/Extensions` (existing ones are timestamped-backup aside first).
+3. Copies `tools/publish` and `tools/mic-input-check` into place.
+4. Rebuilds the Auxiliary Kernel Collection with `kmutil`, refusing to install the result if any expected bundle identifier is missing.
+5. Arms a **five-minute auto-restore watchdog** as a LaunchDaemon.
+
+The watchdog is the part worth understanding. After you reboot, you have five minutes to say the boot was fine:
+
+```bash
+sudo touch /var/db/custom-kexts-pending.ok    # boot was good
+sudo rm -f /var/db/custom-kexts-pending /var/db/custom-kexts-pending.ok
+```
+
+If you say nothing, the watchdog puts the previous kernelcollection back — so a bad build is less likely to leave you stranded. It was tested against six scenarios: confirmed, silent, idle, cleared mid-wait, missing backup, and already-identical. **It is a safety net, not a guarantee**; it only helps if the machine still boots far enough for the daemon to run.
+
+Note these binaries are unsigned. That is fine under this build's SIP configuration, and is not fine without it.
 
 ## Starting point
 
-**If you already have macOS installed**, this EFI is your path — see [docs/replication.md](docs/replication.md) §2.
+**If you already have macOS installed.** Mount your ESP, generate your own SMBIOS identifiers, copy `BOOT` and `OC` across, then run `install-custom-kexts.sh`. Full steps and the verification order are in [docs/replication.md](docs/replication.md) §2.
 
-**If you only have Windows**, do not start here. This repo ships an EFI, not a macOS installer. Use [1401](https://github.com/NullMoth/1401) (Windows, free) to build a minimal EFI and a macOS install stick, install macOS, then swap in this EFI to get 120 Hz, fan control, and the rest. The full route, including why the 1401 output is a boot-key rather than a destination, is in [docs/replication.md](docs/replication.md).
+**If you only have Windows, with no Mac and no macOS installed.** This repo ships an EFI, not a macOS installer, so it cannot be your first step. Use [1401](https://github.com/NullMoth/1401) (Windows, free) to build a minimal EFI and a macOS install stick, install macOS, then swap in this EFI. The generated build already has Wi-Fi, Bluetooth, keyboard, and touchpad for this hardware — see [docs/replication.md](docs/replication.md) for the verified device IDs and the full route. It will not have 120 Hz, fan control, or the mic stack; those are what the swap adds.
 
 ## Using it
 
-1. Make a verified backup of your disk and existing EFI first, and test from a bootable USB before replacing the internal ESP.
-2. Generate your own SMBIOS identifiers and write them into `config.plist` (`PlatformInfo → Generic`).
-3. Copy `BOOT` and `OC` onto your EFI System Partition.
-4. Install the `/Library/Extensions` kexts (or use the provided AuxiliaryKernelExtensions.kc) to get full functionality.
-5. Disable sleep, as described in the safety section.
-6. Boot, then check the relevant items: display and 120 Hz, brightness, input, audio, USB, network, mic.
+1. **Make recovery possible first.** Back up the disk, and test from a bootable USB before replacing the internal ESP. A second OpenCore folder on the same partition is not a recovery plan. The fallback described above — booting the 1401 stick or a backed-up EFI — is what you use if this one fails.
+2. **Generate your own SMBIOS identifiers** and write them into `config.plist` (`PlatformInfo → Generic`). Never reuse another machine's serial, MLB, UUID, or ROM. Leaving the placeholders will not boot properly and will not enable Apple services.
+3. **Copy `BOOT` and `OC`** onto the EFI System Partition.
+4. **Run `install-custom-kexts.sh`** for the fan mode, thermal offset, and diagnostic kexts, or skip it and accept their absence.
+5. **Disable sleep:** `sudo pmset -a sleep 0`. Keep it off until you have verified wake on your own hardware.
+6. **Reboot and verify**, in this order, stopping at the first failure: `sw_vers` and CPU counts → display, 120 Hz, brightness keys → keyboard and touchpad → speaker output → network → `kmutil showloaded` → mic.
 
-See [docs/replication.md](docs/replication.md) for the full build record, assumptions, and safe changes.
+Windows users should also turn off Fast Startup before multi-booting, since it can leave the filesystem locked.
+
+See [docs/replication.md](docs/replication.md) for the full build record, hardware details, assumptions, safe changes, and the rollback path.
 
 ## License
 
