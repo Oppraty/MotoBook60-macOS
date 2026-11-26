@@ -4,6 +4,51 @@ This repository ships a working, tested EFI alongside this guide. The guide expl
 
 This EFI is **not reproducible from stock releases alone**. It contains a custom-built OpenCore bootloader and several custom kernel extensions used in specific combinations. Keep a verified baseline that boots without the optional components before changing anything.
 
+## Starting from Windows only: build a minimal EFI with 1401
+
+This repository ships an EFI, not a macOS installer. If you already have macOS installed, [§2](#2-installing-and-verifying-the-efi) is your path. This section is for someone starting from **Windows only, with no Mac and no macOS installed**.
+
+[1401](https://github.com/NullMoth/1401) runs on Windows, reads your hardware, builds an OpenCore EFI for it, and writes a macOS install stick. It is free and open source (PolyForm Noncommercial) and was designed for exactly this situation.
+
+1. Download `1401-Windows-<version>.zip` from its [releases page](https://github.com/NullMoth/1401/releases) and unzip it, keeping the `1401` folder together.
+2. Run `1401.exe` **as administrator**. It needs admin to read ACPI tables and write disks.
+3. Click **Check this PC**, read the BIOS steps it shows you, then **Build the Mac setup**, then **Create the macOS stick**. You need an 8 GB+ USB stick that can be erased, and an internet connection — it downloads Apple's recovery image and checks every chunk against Apple's signed chunklist.
+4. Apply the BIOS settings it listed, reboot to the stick, pick the macOS installer in the OpenCore menu, and install.
+
+What the generated EFI gives you, and why it is enough to get started:
+- **Wi-Fi works.** 1401 builds on [OpCore-Simplify](https://github.com/lzhoang2801/OpCore-Simplify), which knows this laptop's Wi-Fi card (`10EC:8922`) and Bluetooth card (`0BDA:8922`) and selects `AirPort_RTW89` plus the Realtek Bluetooth firmware stack automatically. Both device IDs are in its PCI database, and it is the same driver family this repo ships.
+- **Keyboard and touchpad work.** It picks VoodooPS2Controller and VoodooI2C/VoodooI2CHID for I2C devices, plus BrightnessKeys on laptops.
+- **Boot logs land on the stick**, so a machine that never reaches macOS can still report why — and 1401 can send that report ID when you ask for help.
+
+What the generated EFI does **not** give you, and this is the important part:
+- **120 Hz will not work.** 1401 generates a stock WhateverGreen config. This panel needs the custom WhateverXe 0.8.2 build with the Samsung-specific timing constants, which only exists here.
+- **No fan control, no thermal offset, no power profile.** FanMode, `hpmpl1=64`, `hcpower=4,2`, `tccoffset=2`, and HybridPM are absent.
+- **No internal mic stack.** RazerSSTMicrophone is absent.
+- BlueToolFixup is the stock build, not the Realtek-patched one this laptop needs.
+
+Treat the 1401 output as a **boot-key to get into macOS**, then replace it. It is a means to an install, not the destination.
+
+### Then swap in this EFI
+
+Once macOS is installed and boots from the 1401 stick:
+
+1. Back up the 1401-generated `EFI` folder somewhere you can restore it. This is your recovery path.
+2. Fill in your own SMBIOS identifiers in this repo's `config.plist` (see [§1](#1-what-this-build-is-and-what-to-check-first) step 3). 1401 already generated a set for this machine — you can reuse those or generate fresh ones with GenSMBIOS. Do not leave the placeholders.
+3. Copy this repo's `BOOT` and `OC` onto the internal ESP, replacing the 1401 output.
+4. Decide whether to install `AuxiliaryKernelExtensions.kc` — mic stack, fan control, and `tccoffset=2` depend on it (see [§4](#four-custom-kernel-extensions-plus-one-dependency)).
+5. Reboot to the internal EFI and work through the checks in [§2](#2-installing-and-verifying-the-efi) step 4.
+
+If it fails to boot, boot the 1401 stick again.
+
+### Or: build your own from scratch
+
+If you would rather not depend on either this EFI or 1401, the [Dortania OpenCore Install Guide](https://dortania.github.io/OpenCore-Install-Guide/) is the reference for a hand-built config, and [ProperTree](https://github.com/corpnewt/ProperTree) is the usual plist editor. Two honest warnings if you take this route on this machine:
+
+- **120 Hz cannot be built from stock sources.** It needs a patched WhateverXe and this panel's timing constants. You can match the values in [§3](#the-oled-build) and build your own, but the patch set is not published here.
+- **The custom kernel extensions have no public upstream release.** Expect to write or port a FanMode-equivalent, and accept whatever the standard mic situation is.
+
+Start from the OpenCore sample rather than editing someone's config, generate your own SMBIOS, and add drivers one at a time — a stock build you understand beats a copied build you do not.
+
 ## 1. What this build is, and what to check first
 
 This EFI is exported from a machine that was already booting. Treat it as a starting point for a similar machine, not a drop-in image.

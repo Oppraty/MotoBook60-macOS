@@ -45,6 +45,12 @@ A working OpenCore EFI for the Motorola Moto Book 60 (machine type `83J7`), Inte
   - `AuxiliaryKernelExtensions.kc` — a prebuilt kernelcollection that carries the five `/Library/Extensions` kexts, needed for fan mode and fan hotkey, microphone, and read-only power diagnostics to work. It is machine-neutral; your serial, MLB, UUID, and MAC do not appear in it.
 - No backups, `.dSYM`, or `._*` files are committed.
 
+## Starting point
+
+**If you already have macOS installed**, this EFI is your path — see [docs/replication.md](docs/replication.md) §2.
+
+**If you only have Windows**, do not start here. This repo ships an EFI, not a macOS installer. Use [1401](https://github.com/NullMoth/1401) (Windows, free) to build a minimal EFI and a macOS install stick, install macOS, then swap in this EFI to get 120 Hz, fan control, and the rest. The full route, including why the 1401 output is a boot-key rather than a destination, is in [docs/replication.md](docs/replication.md).
+
 ## Using it
 
 1. Make a verified backup of your disk and existing EFI first, and test from a bootable USB before replacing the internal ESP.
