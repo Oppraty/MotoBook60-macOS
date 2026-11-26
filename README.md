@@ -93,7 +93,27 @@ Note these binaries are unsigned. That is fine under this build's SIP configurat
 
 **If you already have macOS installed.** Mount your ESP, generate your own SMBIOS identifiers, copy `BOOT` and `OC` across, then run `install-custom-kexts.sh`. Full steps and the verification order are in [docs/replication.md](docs/replication.md) §2.
 
-**If you only have Windows, with no Mac and no macOS installed.** This repo ships an EFI, not a macOS installer, so it cannot be your first step. Use [1401](https://github.com/NullMoth/1401) (Windows, free) to build a minimal EFI and a macOS install stick, install macOS, then swap in this EFI. The generated build already has Wi-Fi, Bluetooth, keyboard, and touchpad for this hardware — see [docs/replication.md](docs/replication.md) for the verified device IDs and the full route. It will not have 120 Hz, fan control, or the mic stack; those are what the swap adds.
+**If you only have Windows, with no Mac and no macOS installed.** This repo ships an EFI, not a macOS installer, so it cannot be your first step. Here is the whole route; the reasoning behind it is in [docs/replication.md](docs/replication.md) §1.
+
+1. **Confirm your hardware.** In Device Manager, check the hardware IDs for the graphics (`8086:A7AB`), Wi-Fi (`10EC:8922`), and Bluetooth (`0BDA:D922`) devices. Other `83J7` units ship different wireless cards, and the Realtek driver stack shipped here will not apply to them.
+2. **Download 1401** ([releases](https://github.com/NullMoth/1401/releases)) and unzip it, keeping the `1401` folder together. Run `1401.exe` **as administrator** — it needs admin to read ACPI tables and write disks.
+3. **Check this PC**, read the BIOS settings it lists, then **Build the Mac setup**, then **Create the macOS stick**. You need an 8 GB+ USB stick that can be erased plus an internet connection; it downloads Apple's recovery image and checks every chunk against Apple's signed chunklist.
+4. **Apply those BIOS settings**, reboot to the stick, and install macOS from the OpenCore picker.
+5. **Swap in this EFI.** Back up the 1401-generated `EFI` folder first — it is your recovery path. Generate SMBIOS identifiers (1401 already made a set for this machine; reuse it or generate fresh ones), copy `BOOT` and `OC` onto the internal EFI System Partition, and reboot.
+6. **Finish the job inside macOS.** The swap gives you 120 Hz, brightness, Wi-Fi, Bluetooth, keyboard, touchpad, speakers, and battery. Fan control, the thermal offset, and the diagnostic kexts only appear after this step:
+
+   ```bash
+   sudo ./install-custom-kexts.sh
+   ```
+
+   Reboot, then confirm the boot within five minutes or the watchdog reverts it:
+
+   ```bash
+   sudo touch /var/db/custom-kexts-pending.ok
+   sudo rm -f /var/db/custom-kexts-pending /var/db/custom-kexts-pending.ok
+   ```
+
+The 1401 output is a boot-key, not a destination: it is a stock OpenCore build, so it cannot supply this panel's custom graphics driver or any of the five local kernel extensions. If the swap fails to boot, boot the 1401 stick again.
 
 ## Using it
 
