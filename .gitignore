@@ -4,6 +4,7 @@
 !/docs/
 /docs/*
 !/docs/replication.md
+!/docs/idle-power-findings.md
 !/EFI/
 !/install-custom-kexts.sh
 !/tools/
