@@ -1,33 +1,27 @@
 #!/bin/bash
-# Root publisher for RazerSSTMicrophone.
+# Root publisher for RazerSSTMicrophone. One attempt per boot, then stop.
 #
-# Two earlier versions of this failed for different reasons, both worth
-# recording:
+# Three earlier versions, each wrong in a different way:
 #
-# 1. The original ran publish exactly once ~70 s after boot with
-#    KeepAlive=false, so an early failure was never retried.
-# 2. An intermediate version gated on FirmwareReady before attempting. That
-#    was wrong: FirmwareReady is only set *after* publication is requested and
-#    the DSP firmware downloads, so it is a downstream effect of publishing,
-#    not a precondition. The script waited for something it had to cause, and
-#    logged "dsp not FirmwareReady yet, waiting" forever.
+# 1. The original ran publish once ~70 s after boot with KeepAlive=false, so an
+#    early failure was never retried.
+# 2. A version gated on FirmwareReady. Wrong: that property is only set *after*
+#    publication triggers the DSP download, so the script waited for something
+#    it had to cause and logged "dsp not FirmwareReady yet, waiting" forever.
+# 3. A retry loop that kept calling publish forever. Also wrong. Observed on
+#    2026-11-27: the kext publishes, captures, then goes dormant and clears
+#    PublishesAudioInput; further publish calls return 0xe00002d5 without
+#    re-arming it. The loop read that as failure and hammered it - 18 attempts,
+#    none of which changed anything.
 #
-# Now: wait only for the kext to be loaded, then attempt publication and retry.
-# No gating on a condition that publication itself is what produces.
+# So: bounded waiting, then ONE publish call, then exit either way. If the
+# device later goes dormant on its own, that is a kext behaviour, not something
+# a daemon can fix by calling publish again.
 export PATH=/usr/sbin:/usr/bin:/bin
 
-# Where the built publisher lives. Resolved in order, with the first existing
-# executable winning:
-#   1. beside this script (how it runs from the repo)
-#   2. /usr/local/libexec/moto60/publish - where the installed daemon finds it
-#   3. the two username-free locations added earlier
-#   4. inside the kext port's own build tree
-#
-# Verified from the installed location: when this file runs as
-# /usr/local/sbin/razermic-publish.sh, SELF is /usr/local/sbin and none of the
-# paths resolve unless step 2 has actually been installed. That is exactly how
-# it failed on 2026-11-27 - the daemon exited 1 with "no publish binary found"
-# and never attempted publication once.
+# Where the built publisher lives. First existing executable wins. Step 2 is the
+# one that matters when this runs as /usr/local/sbin/razermic-publish.sh, since
+# SELF is then /usr/local/sbin and nothing beside it resolves.
 SELF="$(cd "$(dirname "$0")" && pwd)"
 PUB=""
 for c in \
@@ -39,50 +33,45 @@ for c in \
   [ -x "$c" ] && { PUB="$c"; break; }
 done
 if [ -z "$PUB" ]; then
-  echo "$(date) no publish binary found; searched: \$SELF/publish, /usr/local/libexec/moto60/publish, /Library/Application Support/moto60/publish, /usr/local/share/moto60/publish" >> /var/log/razermic-publish.log
+  echo "$(date) no publish binary found (searched \$SELF/publish, /usr/local/libexec/moto60/publish, /Library/Application Support/moto60/publish, /usr/local/share/moto60/publish)" >> /var/log/razermic-publish.log
   exit 1
 fi
 
 SVC=RazerSSTMicrophone
 LOG=/var/log/razermic-publish.log
-ATTEMPT=0
 
 state() { ioreg -r -c "$SVC" -l -w0 2>/dev/null; }
 is_published() { state | grep -q '"PublishesAudioInput" = Yes'; }
 
-# Wait for the kext itself, before publishing.
-for _ in $(seq 1 60); do
+# Wait for the kext to be loaded. No other precondition: everything the kext
+# needs to get to publication is produced by publication itself.
+WAITED=0
+while [ "$WAITED" -lt 120 ]; do
     state | grep -q '"Phase"' && break
     sleep 2
+    WAITED=$((WAITED + 1))
 done
-state | grep -q '"Phase"' || { echo "$(date) $SVC never appeared; giving up" >> "$LOG"; exit 1; }
+if ! state | grep -q '"Phase"'; then
+  echo "$(date) $SVC never appeared after $((WAITED*2))s; not publishing" >> "$LOG"
+  exit 1
+fi
 
-while true; do
-    if is_published; then
-        [ "$ATTEMPT" -gt 0 ] && echo "$(date) published after $ATTEMPT attempt(s)" >> "$LOG"
-        exit 0
-    fi
+# Already published - a previous run or the kext's own state. Nothing to do.
+if is_published; then
+  echo "$(date) already published; nothing to do" >> "$LOG"
+  exit 0
+fi
 
-    ATTEMPT=$((ATTEMPT + 1))
-    "$PUB" >/dev/null 2>&1
-    RC=$?
-    sleep 3
+"$PUB" >/dev/null 2>&1
+RC=$?
+sleep 3
 
-    if is_published; then
-        echo "$(date) published rc=$RC after $ATTEMPT attempt(s)" >> "$LOG"
-        exit 0
-    fi
+if is_published; then
+  echo "$(date) published rc=$RC" >> "$LOG"
+  exit 0
+fi
 
-    # Report the phase alongside the failure - that is what localises a stall.
-    PH=$(state | grep -oE '"Phase" = "[^"]*"' | head -1 | sed 's/.*= "//;s/"//')
-    FAIL=$(state | grep -oE '"Failure" = "[^"]*"' | head -1 | sed 's/.*= "//;s/"//')
-    echo "$(date) attempt $ATTEMPT failed rc=$RC phase=${PH:-unknown} failure=${FAIL:-none}" >> "$LOG"
-
-    # Fast retries for the first ~10 min after boot, then a slower steady-state
-    # poll so a late-arriving handshake is eventually caught.
-    if [ "$ATTEMPT" -lt 20 ]; then
-        sleep 28
-    else
-        sleep 120
-    fi
-done
+PH=$(state | grep -oE '"Phase" = "[^"]*"' | head -1 | sed 's/.*= "//;s/"//')
+FAIL=$(state | grep -oE '"Failure" = "[^"]*"' | head -1 | sed 's/.*= "//;s/"//')
+echo "$(date) publish rc=$RC did not stick; phase=${PH:-unknown} failure=${FAIL:-none}. Reboot to retry." >> "$LOG"
+exit 1
