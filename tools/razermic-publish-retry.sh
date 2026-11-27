@@ -1,14 +1,19 @@
 #!/bin/bash
 # Root publisher for RazerSSTMicrophone.
 #
-# Replaces a one-shot version that failed intermittently. The old script ran
-# publish exactly once ~70 s after boot; when the DSP had not finished its
-# power-management idle handshake yet, publish returned 0 but
-# PublishesAudioInput never flipped to Yes, and nothing retried until reboot.
-# That produced the alternating 'published' / 'publish failed' log on 2026-11-26.
+# Two earlier versions of this failed for different reasons, both worth
+# recording:
 #
-# Now: retry on a fixed cadence for a bounded window after boot, and keep
-# trying at a slower cadence forever, because the failure is a timing race.
+# 1. The original ran publish exactly once ~70 s after boot with
+#    KeepAlive=false, so an early failure was never retried.
+# 2. An intermediate version gated on FirmwareReady before attempting. That
+#    was wrong: FirmwareReady is only set *after* publication is requested and
+#    the DSP firmware downloads, so it is a downstream effect of publishing,
+#    not a precondition. The script waited for something it had to cause, and
+#    logged "dsp not FirmwareReady yet, waiting" forever.
+#
+# Now: wait only for the kext to be loaded, then attempt publication and retry.
+# No gating on a condition that publication itself is what produces.
 export PATH=/usr/sbin:/usr/bin:/bin
 
 # Where the built publisher lives. Resolves relative to this script first, then
@@ -31,19 +36,18 @@ ATTEMPT=0
 
 state() { ioreg -r -c "$SVC" -l -w0 2>/dev/null; }
 is_published() { state | grep -q '"PublishesAudioInput" = Yes'; }
-is_ready()     { state | grep -q '"FirmwareReady" = Yes'; }
+
+# Wait for the kext itself, before publishing.
+for _ in $(seq 1 60); do
+    state | grep -q '"Phase"' && break
+    sleep 2
+done
+state | grep -q '"Phase"' || { echo "$(date) $SVC never appeared; giving up" >> "$LOG"; exit 1; }
 
 while true; do
     if is_published; then
         [ "$ATTEMPT" -gt 0 ] && echo "$(date) published after $ATTEMPT attempt(s)" >> "$LOG"
         exit 0
-    fi
-
-    # DSP not ready yet is the expected early-boot condition; not an error.
-    if ! is_ready; then
-        echo "$(date) dsp not FirmwareReady yet, waiting" >> "$LOG"
-        sleep 10
-        continue
     fi
 
     ATTEMPT=$((ATTEMPT + 1))
@@ -56,11 +60,13 @@ while true; do
         exit 0
     fi
 
-    echo "$(date) attempt $ATTEMPT failed rc=$RC (dsp ready, publish did not stick)" >> "$LOG"
+    # Report the phase alongside the failure - that is what localises a stall.
+    PH=$(state | grep -oE '"Phase" = "[^"]*"' | head -1 | sed 's/.*= "//;s/"//')
+    FAIL=$(state | grep -oE '"Failure" = "[^"]*"' | head -1 | sed 's/.*= "//;s/"//')
+    echo "$(date) attempt $ATTEMPT failed rc=$RC phase=${PH:-unknown} failure=${FAIL:-none}" >> "$LOG"
 
-    # Fast retries for the first ~10 min after boot, then a slow steady-state
-    # poll, so a late-arriving handshake is eventually caught without burning
-    # cycles forever.
+    # Fast retries for the first ~10 min after boot, then a slower steady-state
+    # poll so a late-arriving handshake is eventually caught.
     if [ "$ATTEMPT" -lt 20 ]; then
         sleep 28
     else
