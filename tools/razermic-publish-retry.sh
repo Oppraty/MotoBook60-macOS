@@ -16,19 +16,32 @@
 # No gating on a condition that publication itself is what produces.
 export PATH=/usr/sbin:/usr/bin:/bin
 
-# Where the built publisher lives. Resolves relative to this script first, then
-# falls back to paths that do not embed a username, so the script keeps working
-# after the repo moves and does not publish a home directory in its source.
+# Where the built publisher lives. Resolved in order, with the first existing
+# executable winning:
+#   1. beside this script (how it runs from the repo)
+#   2. /usr/local/libexec/moto60/publish - where the installed daemon finds it
+#   3. the two username-free locations added earlier
+#   4. inside the kext port's own build tree
+#
+# Verified from the installed location: when this file runs as
+# /usr/local/sbin/razermic-publish.sh, SELF is /usr/local/sbin and none of the
+# paths resolve unless step 2 has actually been installed. That is exactly how
+# it failed on 2026-11-27 - the daemon exited 1 with "no publish binary found"
+# and never attempted publication once.
 SELF="$(cd "$(dirname "$0")" && pwd)"
 PUB=""
 for c in \
   "$SELF/publish" \
-  "/Library/Application Support/moto60/publish" \
   "/usr/local/libexec/moto60/publish" \
+  "/Library/Application Support/moto60/publish" \
+  "/usr/local/share/moto60/publish" \
   "$SELF/../sources/dmic-port/RazerSSTMicrophone/build/publish"; do
   [ -x "$c" ] && { PUB="$c"; break; }
 done
-[ -n "$PUB" ] || { echo "$(date) no publish binary found" >> /var/log/razermic-publish.log; exit 1; }
+if [ -z "$PUB" ]; then
+  echo "$(date) no publish binary found; searched: \$SELF/publish, /usr/local/libexec/moto60/publish, /Library/Application Support/moto60/publish, /usr/local/share/moto60/publish" >> /var/log/razermic-publish.log
+  exit 1
+fi
 
 SVC=RazerSSTMicrophone
 LOG=/var/log/razermic-publish.log
