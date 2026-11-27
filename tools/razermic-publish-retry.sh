@@ -11,14 +11,16 @@
 # trying at a slower cadence forever, because the failure is a timing race.
 export PATH=/usr/sbin:/usr/bin:/bin
 
-# Where the built publisher lives. Resolves relative to this script's repo when
-# present, so it keeps working after the repo moves.
+# Where the built publisher lives. Resolves relative to this script first, then
+# falls back to paths that do not embed a username, so the script keeps working
+# after the repo moves and does not publish a home directory in its source.
 SELF="$(cd "$(dirname "$0")" && pwd)"
 PUB=""
 for c in \
-  "/Users/praty/Documents/Default Project/MotoBook60-Handoff/MotoBook60-macOS/tools/publish" \
   "$SELF/publish" \
-  "/Users/praty/Documents/Default Project/MotoBook60-Handoff/sources/dmic-port/RazerSSTMicrophone/build/publish"; do
+  "/Library/Application Support/moto60/publish" \
+  "/usr/local/libexec/moto60/publish" \
+  "$SELF/../sources/dmic-port/RazerSSTMicrophone/build/publish"; do
   [ -x "$c" ] && { PUB="$c"; break; }
 done
 [ -n "$PUB" ] || { echo "$(date) no publish binary found" >> /var/log/razermic-publish.log; exit 1; }
