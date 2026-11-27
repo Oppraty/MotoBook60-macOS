@@ -55,6 +55,48 @@ silences the engine.
 versions retried in a loop, which was actively harmful: 18 attempts logged on
 2026-11-27, none of which changed anything.
 
+## Tap-to-click silently off (resolved)
+
+Symptom: single-finger tap does nothing; physical click works.
+
+Cause: `com.apple.AppleMultitouchTrackpad` `Clicking = 0`.
+
+**The trap: setting it fails silently with the wrong type flag.**
+
+    defaults write com.apple.AppleMultitouchTrackpad Clicking -int 1     # FAILS
+    defaults write com.apple.AppleMultitouchTrackpad Clicking -bool true  # WORKS
+
+The domain stores `Clicking` as a Boolean. An `-int` write to a Boolean key
+does not error, it just does nothing. Worse, the two verification commands
+disagree after the correct write — this is what made it look like a driver
+problem:
+
+    defaults read com.apple.AppleMultitouchTrackpad Clicking   # reports 0
+    plutil -extract Clicking raw ~/Library/Preferences/com.apple.AppleMultitouchTrackpad.plist
+                                                                 # reports true
+
+`plutil` reads the file, `defaults read` reported a stale or coerced value.
+Cross-check with `plutil` when a `defaults write` appears not to take.
+
+Note the asymmetry inside the same domain: integer-valued keys such as
+`TrackpadThreeFingerTapGesture` read back correctly immediately. Only the
+Boolean key behaves this way.
+
+Also disabled while in that pane: `TrackpadThreeFingerTapGesture -int 0`
+(look up & data detectors, enabled by default at 2).
+
+### Theories that were wrong
+
+Recorded because each cost real time:
+
+- **VoodooI2CHID can't do tap-to-click.** False. The kext exposes a tip switch
+  at `ElementCookie=42`, `ReportID=0`, `UsagePage=13`, `Usage=0x22`. macOS
+  reads it and drives it correctly.
+- **Vorssaint's pointer feature swallowed the tap.** False. Quitting the app
+  restored tap, but disabling every pointer feature inside it did not. The
+  correlation was real, the causation was not — the app was quit at the same
+  time the setting was fixed.
+
 ## Cursor jitter while using the keyboard
 
 **Status: pre-existing, unresolved. Not a regression.**
