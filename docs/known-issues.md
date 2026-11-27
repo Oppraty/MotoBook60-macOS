@@ -63,27 +63,46 @@ Cause: `com.apple.AppleMultitouchTrackpad` `Clicking = 0`.
 
 **The trap: setting it fails silently with the wrong type flag.**
 
-    defaults write com.apple.AppleMultitouchTrackpad Clicking -int 1     # FAILS
-    defaults write com.apple.AppleMultitouchTrackpad Clicking -bool true  # WORKS
+    defaults write com.apple.AppleMultitouchTrackpad Clicking -int 1       # FAILS
+    defaults write com.apple.AppleMultitouchTrackpad Clicking -bool true   # WORKS
 
 The domain stores `Clicking` as a Boolean. An `-int` write to a Boolean key
-does not error, it just does nothing. Worse, the two verification commands
-disagree after the correct write — this is what made it look like a driver
-problem:
+does not error, it just does nothing. Four attempts were made with `-int 1`
+before the flag was questioned.
 
-    defaults read com.apple.AppleMultitouchTrackpad Clicking   # reports 0
-    plutil -extract Clicking raw ~/Library/Preferences/com.apple.AppleMultitouchTrackpad.plist
-                                                                 # reports true
+### Corrections to this entry, added after the fact
 
-`plutil` reads the file, `defaults read` reported a stale or coerced value.
-Cross-check with `plutil` when a `defaults write` appears not to take.
+Two things recorded here earlier were wrong:
 
-Note the asymmetry inside the same domain: integer-valued keys such as
-`TrackpadThreeFingerTapGesture` read back correctly immediately. Only the
-Boolean key behaves this way.
+- **"`defaults read` and `plutil` disagree; the Boolean key reads back
+  unreliably."** They disagreed because `cfprefsd` was holding stale state
+  after it was killed mid-session during diagnosis. After a reboot both
+  commands agreed immediately, on both keys. The domain reads back fine.
+- **"Integer keys in this domain read back correctly."** True, but it was
+  offered as an asymmetry that explained the Boolean behaviour. It explains
+  nothing — both keys read back correctly once `cfprefsd` was healthy.
+
+The lesson worth keeping: `plutil` on the plist file is the reliable check
+when a `defaults write` appears not to take. And `killall cfprefsd` has
+side effects — a plist rewritten at 17:58 during that window reverted
+`TrackpadThreeFingerTapGesture` from 0 back to 2 until reboot.
+
+### Theories that were wrong
+
+Recorded because each cost real time:
+
+- **VoodooI2CHID can't do tap-to-click.** False. The kext exposes a tip switch
+  at `ElementCookie=42`, `ReportID=0`, `UsagePage=13`, `Usage=0x22`. macOS
+  reads it and drives it correctly.
+- **Vorssaint's pointer feature swallowed the tap.** False. Quitting the app
+  restored tap, but disabling every pointer feature inside it did not. The
+  correlation was real, the causation was not.
+- **A missing `TrackpadAgent` applied the preferences.** `TrackpadAgent` does
+  not exist on this system. Invented, then verified absent after the claim.
 
 Also disabled while in that pane: `TrackpadThreeFingerTapGesture -int 0`
-(look up & data detectors, enabled by default at 2).
+(look up & data detectors, enabled by default at 2). This key is an integer
+and reads back correctly.
 
 ### Theories that were wrong
 
