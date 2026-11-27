@@ -100,16 +100,74 @@ Then build the variant:
 changes only the `.incbin` target, so `build.py` stays untouched. It refuses an
 xz-compressed blob so the IPC4 file cannot be embedded by accident.
 
+## Where it stands now (2026-11-27)
+
+Confirmed symptom, cause unknown.
+
+Under `MacPro7,1`:
+
+- kext loads — `local.markplacer.RazerSSTMicrophone (0.3.3)`, version
+  `0.3.3-DMIC16K-RPL`
+- `FirmwareReady` **never** becomes `Yes` (sampled repeatedly, stable)
+- `PublishesAudioInput` stays `No`
+- `mic-input-check` returns `{"device_found":false,"audio_saved":false}`
+- CoreAudio lists a generic "Built-in Input / Internal Microphone" — that is the
+  generic Apple device, **not** the RazerSST one. A listed input device is not
+  evidence the mic works.
+
+Under `MacBookPro16,4` (recorded earlier in GOAL-source.md):
+
+- `PublishesAudioInput=Yes`, `FirmwareReady=Yes`, IPC setup 20/21 Error=0
+- user confirmed working
+
+So the SMBIOS correlation is real, but **the mechanism is not established.** An
+earlier version of this file said a desktop SMBIOS has no battery service and
+that is what breaks the PM idle handshake. That was a guess and it is wrong here:
+`AppleSmartBatteryManager` / `IOPMPowerSource` **are present** on this `MacPro7,1`
+boot (SMCBatteryManager is loaded). Something else about the desktop SMBIOS
+prevents the DSP from reporting ready. Do not repeat the battery-service
+explanation.
+
+## Why the old one-shot publisher was misleading
+
+`/usr/local/sbin/razermic-publish.sh` as installed ran `publish` exactly once
+about 70 s after boot, and the LaunchDaemon has `KeepAlive=false`. It did **not**
+check `FirmwareReady` first, so it invoked `publish` against a DSP that was never
+ready. Its log therefore read `published rc=0` on some boots and
+`publish failed rc=0` on others, which looked like intermittency.
+
+It was not intermittent. The retry replacement waits for `FirmwareReady` before
+attempting and logs `dsp not FirmwareReady yet, waiting` forever — so the
+"publish failed" entries were the publisher being called prematurely, and the
+"published rc=0` entries came from boots where the SMBIOS was different.
+
+**Lesson:** treat `publish`'s exit code as meaningless unless `FirmwareReady` is
+`Yes` first. `tools/razermic-publish-retry.sh` does that.
+
 ## Order to try
 
-1. **`sof-rpl.ri` variant.** Cheap, one file, directly evidenced by both the dmesg
-   above and the reference port.
-2. **`MacBookPro16,4` SMBIOS.** Highest-probability fix for `0xe00002d5`. Saved
-   config `5183eac0` works; costs roughly 40% single-core throughput versus
-   `MacPro7,1`'s 1517/8026.
-3. Only if both fail: inspect what the `publish` binary waits on for the PM idle
-   acknowledgement, and whether a fake battery/`SMCBatteryManager` nub can supply
-   it under a desktop SMBIOS.
+1. **`MacBookPro16,4`.** The confirmed-working configuration, already saved as
+   config `5183eac0` in `evidence/pl1-65-20261126/`. Its CPU cost is **not
+   measured** — GOAL-source.md records "Geekbench A/B vs 954/5777 pending".
+   Ethernet is already absent on `MacPro7,1` (Wi-Fi holds `en0`), so switching
+   gives up nothing there.
+2. **Find what the DSP is actually waiting on.** Now that `FirmwareReady` is known
+   to be the gate, read the kext's own log for what precedes it — the PM idle
+   ack is the named suspect but unproven. `log show --predicate` against
+   `RazerSSTMicrophone` during a boot is the place to look.
+3. `sof-rpl.ri` firmware swap — **not relevant to this failure.** The loaded kext
+   already reports `0.3.3-DMIC16K-RPL`, and `FirmwareReady` failing is upstream of
+   anything firmware-generation would affect. Do not spend time on it first.
+
+## Priorities, corrected
+
+This section previously listed `sof-rpl.ri` first. The `FirmwareReady` finding
+demotes it: the RPL version string is already present, and a firmware-generation
+mismatch would not stop the DSP from reporting ready. The firmware angle only
+matters if `FirmwareReady` is `Yes` and *capture* still fails.
+
+Keep the `sof-rpl.ri` material — it is correct and still untested — but as step 3,
+not step 1.
 
 ## Assets preserved
 
