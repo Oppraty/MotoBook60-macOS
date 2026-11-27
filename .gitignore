@@ -5,6 +5,7 @@
 /docs/*
 !/docs/replication.md
 !/docs/idle-power-findings.md
+!/docs/for-the-mic.md
 !/EFI/
 !/install-custom-kexts.sh
 !/tools/
